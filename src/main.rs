@@ -47,12 +47,12 @@ async fn create_user(
     (StatusCode::CREATED, Json(user))
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 struct CreateUser {
     username: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 struct User {
     id: u64,
     username: String,
@@ -72,9 +72,34 @@ mod test {
         let req = Request::builder().uri("/").body(Body::empty()).unwrap();
         let router = create_app();
         let res = router.oneshot(req).await.unwrap();
-        let bytes = hyper::body::to_bytes(res.into_bytes()).await.unwrap();
+        let bytes = hyper::body::to_bytes(
+            res.into_body())
+            .await
+            .unwrap();
         let body = String::from_utf8(bytes.to_vec()).unwrap();
-        assert_eq!(body, "Hello, world");
-        // router
+        assert_eq!(body, "hello world");
     }
+
+    #[tokio::test]
+    async fn should_return_user_data() {
+        let builder = Request::builder();
+        let req = builder
+            .uri("/users")
+            .method(Method::POST)
+            // .header(header::CONTENT_TYPE, mime::APPLICATION_JSON)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"username": "Alice"}"#))
+            .unwrap();
+        let res = create_app().oneshot(req).await.unwrap();
+
+        let byte_body = res.into_body();
+        let bytes = hyper::body::to_bytes(byte_body).await.unwrap();
+        let body: String = String::from_utf8(bytes.to_vec()).unwrap();
+        let user: User = serde_json::from_str(&body).expect("cannot create User instance.");
+        assert_eq!(user, User {
+            id: 1337,
+            username: "Alice".to_string(),
+        });
+    }
+
 }
