@@ -69,7 +69,10 @@ mod test {
 
     #[tokio::test]
     async fn should_return_hello_world() {
-        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let req = Request::builder()
+            .uri("/")
+            .body(Body::empty())
+            .unwrap();
         let router = create_app();
         let res = router.oneshot(req).await.unwrap();
         let bytes = hyper::body::to_bytes(
