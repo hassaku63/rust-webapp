@@ -89,8 +89,8 @@ mod test {
         let req = builder
             .uri("/users")
             .method(Method::POST)
-            // .header(header::CONTENT_TYPE, mime::APPLICATION_JSON)
-            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_TYPE, mime::APPLICATION_JSON.as_ref())
+            // .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(r#"{"username": "Alice"}"#))
             .unwrap();
         let res = create_app().oneshot(req).await.unwrap();
