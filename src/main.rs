@@ -109,7 +109,7 @@ mod test {
         let req = build_todo_req_with_json(
             "/todos",
             Method::POST,
-            r#"{ "text": "should_return_created_todo }"#.to_string(),
+            r#"{ "text": "should_return_created_todo" }"#.to_string(),
         );
         let res = create_app(repo).oneshot(req).await.unwrap();
 
@@ -134,7 +134,7 @@ mod test {
         let expected = Todo::new(1, "should_get_all_todos".to_string());
 
         let repo = TodoRepositoryForMemory::new();
-        repo.create(CreateTodo::new("should_find_todo".to_string()));
+        repo.create(CreateTodo::new("should_get_all_todos".to_string()));
         let req = build_todo_req_with_empty(Method::GET, "/todos");
         let res = create_app(repo).oneshot(req).await.unwrap();
         let bytes = hyper::body::to_bytes(res.into_body()).await.unwrap();
@@ -152,10 +152,10 @@ mod test {
         repo.create(CreateTodo::new("before_update_todo".to_string()));
         let req = build_todo_req_with_json(
             "/todos/1",
-            Method::POST,
+            Method::PATCH,
             r#"{
                 "text": "should_update_todo",
-                "completed": true
+                "completed": false
             }"#.to_string(),
         );
         let res = create_app(repo).oneshot(req).await.unwrap();
@@ -165,8 +165,6 @@ mod test {
 
     #[tokio::test]
     async fn should_delete_todo() {
-        let expected = Todo::new(1, "should_delete_todo".to_string());
-
         let repo = TodoRepositoryForMemory::new();
         repo.create(CreateTodo::new("should_find_todo".to_string()));
         let req = build_todo_req_with_empty(Method::DELETE, "/todos/1");

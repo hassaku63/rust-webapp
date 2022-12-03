@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Extension, Path, path},
+    extract::{Extension, Path},
     http::StatusCode,
     response::IntoResponse,
     Json
@@ -24,25 +24,33 @@ pub async fn find_todo<T: TodoRepository>(
     Path(id): Path<i32>,
     Extension(repo): Extension<Arc<T>>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    todo!();
-    Ok(StatusCode::OK)
+    let todo = repo.find(id).ok_or(StatusCode::NOT_FOUND)?;
+    Ok((StatusCode::OK, Json(todo)))
 }
 
 pub async fn all_todo<T: TodoRepository>(
     Extension(repo): Extension<Arc<T>>,
 ) -> impl IntoResponse {
-    todo!()
+    let todos = repo.all();
+    (StatusCode::OK, Json(todos))
 }
 
 pub async fn update_todo<T: TodoRepository>(
+    Path(id): Path<i32>,
+    Json(payload): Json<UpdateTodo>,
     Extension(repo): Extension<Arc<T>>,
-) -> impl IntoResponse {
-    todo!()
+) -> Result<impl IntoResponse, StatusCode> {
+    let todo = repo
+        .update(id, payload)
+        .or(Err(StatusCode::NOT_FOUND))?;
+    Ok((StatusCode::CREATED, Json(todo)))
 }
 
 pub async fn delete_todo<T: TodoRepository>(
     Path(id): Path<i32>,
     Extension(repo): Extension<Arc<T>>,
 ) -> impl IntoResponse {
-    todo!()
+    repo.delete(id)
+        .map(|_| StatusCode::NO_CONTENT)
+        .unwrap_or(StatusCode::NOT_FOUND)
 }
