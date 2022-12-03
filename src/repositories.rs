@@ -1,6 +1,7 @@
+use anyhow::Context;
 use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
+    collections::{HashMap},
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -18,7 +19,7 @@ pub trait TodoRepository: Clone + std::marker::Send + std::marker::Sync + 'stati
     fn create(&self, payload: CreateTodo) -> Todo;
     fn find(&self, id: i32) -> Option<Todo>;
     fn all(&self) -> Vec<Todo>;
-    fn update(&self, id: i32, paylaod: UpdateTodo) -> anyhow::Result<Todo>;
+    fn update(&self, id: i32, payload: UpdateTodo) -> anyhow::Result<Todo>;
     fn delete(&self, id: i32) -> anyhow::Result<()>;
 }
 
@@ -27,7 +28,7 @@ pub trait TodoRepository: Clone + std::marker::Send + std::marker::Sync + 'stati
 pub struct Todo {
     id: i32,
     text: String,
-    complated: bool,
+    completed: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -46,7 +47,7 @@ impl Todo {
         Self {
             id,
             text,
-            complated: false,
+            completed: false,
         }
     }
 }
@@ -66,26 +67,109 @@ impl TodoRepositoryForMemory {
             store: Arc::default(),
         }
     }
+
+    fn write_store_ref(&self) -> RwLockWriteGuard<TodoDatas> {
+        self.store.write().unwrap()
+    }
+
+    fn read_store_ref(&self) -> RwLockReadGuard<TodoDatas> {
+        self.store.read().unwrap()
+    }
 }
 
 impl TodoRepository for TodoRepositoryForMemory {
     fn create(&self, payload: CreateTodo) -> Todo {
-        todo!()
+        let mut store = self.write_store_ref();
+        let id = (store.len() + 1) as i32;
+        let todo = Todo::new(id, payload.text.clone());
+        store.insert(id, todo.clone());
+        todo
     }
 
     fn find(&self, id: i32) -> Option<Todo> {
-        todo!()
+        let store = self.read_store_ref();
+        store.get(&id).map(|todo| todo.clone())
     }
 
-    fn update(&self, id: i32, paylaod: UpdateTodo) -> anyhow::Result<Todo> {
-        todo!()
+    // Note: find() の実装に Box を使うパターン. clone の回数が増えるならヒープの利用を検討する
+    // fn find(&self, id: i32) -> Option<Box<Todo>> {
+    //     let store = self.read_store_ref();
+    //     let todo = store.get(&id);
+    //     let todo = Box::new(todo.clone());
+    //     Some(Todo)
+    // }
+
+    fn update(&self, id: i32, payload: UpdateTodo) -> anyhow::Result<Todo> {
+        let mut store = self.write_store_ref();
+        let todo = store
+            .get(&id)
+            .context(RepositoryError::NotFound(id))?;
+        let text = payload.text.unwrap_or(todo.text.clone());
+        let completed = payload.completed.unwrap_or(todo.completed);
+        let todo = Todo {
+            id,
+            text,
+            completed,
+        };
+        store.insert(id, todo.clone());
+        Ok(todo)
     }
 
     fn all(&self) -> Vec<Todo> {
-        todo!()
+        let store = self.read_store_ref();
+        Vec::from_iter(store.values().map(|todo| todo.clone()))
     }
 
     fn delete(&self, id: i32) -> anyhow::Result<()> {
-        todo!()
+        let mut store = self.write_store_ref();
+        store.remove(&id).ok_or(RepositoryError::NotFound(id))?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn todo_crud_scenario() {
+        let text = "todo text".to_string();
+        let id = 1;
+        let expected = Todo::new(id, text.clone());
+
+        let repo = TodoRepositoryForMemory::new();
+        // create
+        let todo = repo.create(CreateTodo {text});
+        assert_eq!(expected, todo);
+
+        // find
+        let todo = repo.find(todo.id).unwrap();
+        assert_eq!(expected, todo);
+
+        // all
+        let todos = repo.all();
+        assert_eq!(vec![expected], todos);
+
+        // update
+        let text = "update todo".to_string();
+        let todo = repo.update(
+            1,
+            UpdateTodo {
+                text: Some(text.clone()),
+                completed: Some(true),
+            }
+        ).expect("failed update todo");
+        assert_eq!(
+            Todo {
+                id,
+                text,
+                completed: true,
+            },
+            todo
+        );
+
+        // delete
+        let res = repo.delete(id);
+        assert!(res.is_ok())
     }
 }
