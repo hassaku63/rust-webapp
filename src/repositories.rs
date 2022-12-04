@@ -142,6 +142,72 @@ impl TodoRepository for TodoRepositoryForDb {
 }
 
 #[cfg(test)]
+mod test {
+    use super::*;
+    use dotenv::dotenv;
+    use sqlx::PgPool;
+    use std::env;
+
+    #[tokio::test]
+    async fn crud_scenario() {
+        dotenv().ok();
+        let database_url = env::var("DATABASE_URL").expect("undefined [DATABASE_URL]");
+        let pool = PgPool::connect(&database_url)
+            .await
+            .expect(&format!("failed to connect database: [{}]", database_url));
+        
+        // なぜ Clone する必要が？
+        let repo = TodoRepositoryForDb::new(pool.clone());
+        let todo_text = "[crud_scenario] text";
+
+        // create
+        let created = repo
+            .create(CreateTodo::new(todo_text.to_string()))
+            .await
+            .expect("[create] returned Err");
+        assert_eq!(created.text, todo_text);
+        assert!(!created.completed);
+
+        // find
+        let todo = repo.find(created.id).await.expect("[find] returned Err");
+        assert_eq!(todo, created);
+
+        // all
+        let todos = repo.all().await.expect("[all] returned Err");
+        assert_eq!(todos, vec![todo]);
+
+        // update
+        let update_text = "[crud_scenario] updated text";
+        let todo = repo
+            .update(
+                created.id,
+                UpdateTodo {
+                    text: Some(update_text.to_string()),
+                    completed: Some(true),
+            })
+            .await
+            .expect("[update] returned Err");
+        assert_eq!(created.id, todo.id);
+        assert_eq!(todo.text, update_text);
+
+        // delete
+        let _ = repo.delete(todo.id).await.expect("[delete] returned Err");
+        let res = repo.find(created.id).await;
+        assert!(res.is_err());
+
+        let todo_rows = sqlx::query(
+            r#"
+            SELECT * FROM todos where id = $1
+            "#
+        ).bind(todo.id)
+        .fetch_all(&pool)
+        .await
+        .expect("[delete] todo_labels fetch error");
+        assert!(todo_rows.len() == 0);
+    }
+}
+
+#[cfg(test)]
 pub mod test_utils {
     use anyhow::Context;
     use axum::async_trait;
