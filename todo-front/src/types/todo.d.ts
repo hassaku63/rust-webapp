@@ -7,3 +7,8 @@ export type Todo = {
 export type NewTodoPayload = {
     text: string
 }
+
+export type UpdateTodoPayload = {
+    text?: string
+    completed?: boolean
+}
