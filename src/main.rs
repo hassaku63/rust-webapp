@@ -17,9 +17,11 @@ use handlers::{
     find_todo,
     update_todo,
 };
+use hyper::header::CONTENT_TYPE;
 use std::net::SocketAddr;
 use std::{env, sync::Arc};
 use sqlx::PgPool;
+use tower_http::cors::{Any, CorsLayer, AllowOrigin, Cors};
 use dotenv::dotenv;
 
 #[tokio::main]
@@ -47,7 +49,7 @@ async fn main() {
         .unwrap();
 }
 
-fn create_app<T: TodoRepository>(repoitory: T) -> Router {
+fn  create_app<T: TodoRepository>(repoitory: T) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/todos", post(create_todo::<T>).get(all_todo::<T>))
@@ -56,7 +58,14 @@ fn create_app<T: TodoRepository>(repoitory: T) -> Router {
             get(find_todo::<T>)
                 .delete(delete_todo::<T>)
                 .patch(update_todo::<T>)
-        ).layer(Extension(Arc::new(repoitory)))
+        )
+        .layer(Extension(Arc::new(repoitory)))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::exact("http://localhost:3001".parse().unwrap()))
+                .allow_methods(Any)
+                .allow_headers(vec![CONTENT_TYPE])
+        )
 }
 
 async fn root() -> &'static str {

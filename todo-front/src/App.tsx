@@ -1,25 +1,20 @@
-import { useState, FC } from 'react'
+import { useEffect, useState, FC } from 'react'
 import 'modern-css-reset'
 import { ThemeProvider, createTheme } from '@mui/material/styles'
 import { Box, Stack, Typography } from "@mui/material";
 import { NewTodoPayload, Todo } from "./types/todo";
 import TodoList from "./components/TodoList";
 import TodoForm from "./components/TodoForm";
+import { addTodoItem, getTodoItems } from "./lib/api/todo";
 
 const TodoApp: FC = () => {
   const [todos, setTodos] = useState<Todo[]>([])
-  const createId = () => todos.length + 1
 
   const onSubmit = async (payload: NewTodoPayload) => {
     if (!payload.text) return
-    setTodos((prev) => [
-      {
-        id: createId(),
-        text: payload.text,
-        completed: false,
-      },
-      ...prev,
-    ])
+    const newTodo = await addTodoItem(payload)
+    const todos = await getTodoItems()
+    setTodos(todos)
   }
 
   const onUpdate = (updateTodo: Todo) => {
@@ -35,6 +30,16 @@ const TodoApp: FC = () => {
       })
     )
   }
+
+  // マウント後に Todo アイテムのフェッチを実行している
+  // useEffect の第2引数はフックとなるイベントをリスト指定するらしい
+  // 空の配列の場合だと、マウント時とアンマウント時(DOM の廃棄)のみ、という意味になる
+  useEffect(() => {
+    (async () => {
+      const todos = await getTodoItems()
+      setTodos(todos)
+    })()
+  }, [])
 
   return (
     <>
