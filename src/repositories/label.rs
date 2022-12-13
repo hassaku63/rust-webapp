@@ -50,8 +50,8 @@ impl LabelRepository for LabelRepositoryForDb {
         if let Some(label) = optional_label {
             // アプリケーションでバリデーションするなら、
             // どうして DB 側に制約を入れないのだろうか？？？
-            // return Err(RepositoryError::Duplicate(label.id).into());
-            return Ok(label);
+            return Err(RepositoryError::Duplicate(label.id).into());
+            // return Ok(label);
         }
 
         let label = sqlx::query_as::<_, Label>(
@@ -114,8 +114,29 @@ mod test {
         let pool = PgPool::connect(&database_url)
             .await
             .expect(&format!("cannot connect database: [{}]", database_url));
-        let repo = LabelRepositoryForDb::new(pool);
+        let repo = LabelRepositoryForDb::new(pool.clone());
         let label_text = "test_label";
+
+        // cleanup
+        {
+            let labels = repo.all().await.expect("[all] cannot get all labels");
+            for label in labels.iter() {
+                // let tx = pool.begin().await?;
+                sqlx::query(
+                    r#"
+                    delete from todo_labels
+                    where label_id = $1
+                    "#
+                )
+                .bind(label.id)
+                .execute(&pool.clone())
+                .await
+                .expect(format!("[delete] cannot delete from label_id={}", label.id).as_str());
+
+                repo.delete(label.id).await.expect("[delete] cannot delete label");
+                // tx.commit().await;
+            }
+        }
 
         // create
         // name が unique 制約である場合、DB クリアを毎回やらないと成立しない
@@ -141,7 +162,9 @@ mod test {
             .await
             .expect("[delete] returned Err");
         let labels = repo.all().await.expect("[all] returned Err");
-        assert!(labels.len() == 0);
+        // 他 (Todo) のテストが途中で失敗するなど、Label が残っている初期状態で
+        // このテストが起動してしまうと、次のアサーションは失敗する
+        assert_eq!(labels.len(), 0);
     }
 }
 

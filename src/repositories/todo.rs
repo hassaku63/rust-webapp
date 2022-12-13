@@ -3,6 +3,7 @@ use axum::async_trait;
 use validator::Validate;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
+
 use super::{label::Label, RepositoryError};
 
 // Clone, Send, Sync, 'static の多重継承
@@ -15,6 +16,14 @@ pub trait TodoRepository: Clone + std::marker::Send + std::marker::Sync + 'stati
     async fn all(&self) -> anyhow::Result<Vec<TodoEntity>>;
     async fn update(&self, id: i32, payload: UpdateTodo) -> anyhow::Result<TodoEntity>;
     async fn delete(&self, id: i32) -> anyhow::Result<()>;
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct TodoFromRow {
+    id: i32,
+    text: String,
+    completed: bool,
 }
 
 // 以下の Todo に関連する構造体は derive Clone しないと axum の「共有状態」として利用できなくなる(?)
@@ -37,13 +46,18 @@ pub struct TodoEntity {
 
 fn fold_entities(rows: Vec<TodoWithLabelFromRow>) -> Vec<TodoEntity> {
     let mut rows = rows.iter();
-    let mut accum: Vec<TodoEntity> = vec![];
+    let mut result: Vec<TodoEntity> = vec![];
     'outer: while let Some(row) = rows.next() {
-        let mut todos = accum.iter_mut();
+        let mut todos = result.iter_mut();
 
         while let Some(todo) = todos.next() {
-            // id が一致 = Todo に紐づくラベルが複数存在している
+            // todo:label の N:N 関係を第一正規形展開したものを受けとるので、
+            // rows の中で同じ ID を持つ Todo は存在し得る
+            // TodoEntity 的には自身 (Todo) に紐づく Label を配列でまとめて保持する定義なので、
+            // 同じ Todo ID に属す Label は同じ Entity インスタンスに集約したい、という処理
             if todo.id == row.id {
+                // この todo は result の要素を可変参照で見るデータなので、
+                // todo に対する破壊的操作は result を更新することに注意
                 todo.labels.push(Label {
                     id: row.label_id.unwrap(),
                     name: row.label_name.clone().unwrap(),
@@ -52,7 +66,16 @@ fn fold_entities(rows: Vec<TodoWithLabelFromRow>) -> Vec<TodoEntity> {
             }
         }
         
-        // Todo の id に一致しない場合のみ到達、TodoEntity を作成
+        // 手前の while を抜けているので、この時点では
+        // 今の outer ループで扱っている row の Todo ID は
+        // 今の Vec<TodoEntity> の中に存在してない Todo である、と言える
+        // なので、このコメント以下でやるべき仕事は新しい TodoEntity を作って push すること。
+        // TodoEntity の Todo ID は row が持っているそれ。
+        // 
+        // 実際に DB に入ってるデータとそのクエリ方法の想定として
+        // 交差テーブルを使っての outer join を行うので、
+        // row.label_id は Optional 型となることに注意。
+        // ラベルの有無に関わらず join していくクエリを書くので、label_id は Optional となる。
         let labels = if row.label_id.is_some() {
             vec![Label {
                 id: row.label_id.unwrap(),
@@ -62,21 +85,14 @@ fn fold_entities(rows: Vec<TodoWithLabelFromRow>) -> Vec<TodoEntity> {
             vec![]
         };
 
-        accum.push(TodoEntity {
+        result.push(TodoEntity {
             id: row.id,
             text: row.text.clone(),
             completed: row.completed,
             labels,
         });
     }
-    accum
-}
-
-fn fold_entity(row: TodoWithLabelFromRow) -> TodoEntity {
-    let todo_entities = fold_entities(vec![row]);
-    let todo = todo_entities.first().expect("expect 1 todo");
-
-    todo.clone()
+    result
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Validate)]
@@ -93,6 +109,7 @@ pub struct UpdateTodo {
     #[validate(length(max = 100, message = "over text length"))]
     text: Option<String>,
     completed: Option<bool>,
+    labels: Option<Vec<i32>>,
 }
 
 #[derive(Debug, Clone)]
@@ -109,42 +126,71 @@ impl TodoRepositoryForDb {
 #[async_trait]
 impl TodoRepository for TodoRepositoryForDb {
     async fn create(&self, payload: CreateTodo) -> anyhow::Result<TodoEntity> {
-        let todo = sqlx::query_as::<_, TodoWithLabelFromRow>(
+        let tx = self.pool.begin().await?;
+
+        let row = sqlx::query_as::<_, TodoFromRow>(
             r#"
             INSERT INTO todos (text, completed)
             VALUES ($1, false)
-            RETURNING *;
+            RETURNING *
             "#
         ).bind(payload.text.clone())
         .fetch_one(&self.pool)
         .await?;
+        
+        // この SQL 文は、bind した配列を展開したら例えばこうなる
+        // INSERT INTO todo_labels (todo_id, label_id)
+        // SELECT 1, id
+        // FROM unnest(array[1, 2, 3]) as t(id) 
+        sqlx::query(
+            r#"
+            INSERT INTO todo_labels (todo_id, label_id)
+            SELECT $1, id
+            FROM unnest($2) as t(id);
+            "#
+        )
+        .bind(row.id)
+        .bind(payload.labels)
+        .execute(&self.pool)
+        .await?;
 
-        Ok(fold_entity(todo))
+        tx.commit().await?;
+
+        let todo = self.find(row.id).await?;
+        Ok(todo)
     }
 
     async fn find(&self, id: i32) ->  anyhow::Result<TodoEntity> {
-        let todo = sqlx::query_as::<_, TodoWithLabelFromRow>(
+        let items = sqlx::query_as::<_, TodoWithLabelFromRow>(
             r#"
-            SELECT id, text, completed
+            SELECT todos.*, labels.id label_id, labels.name label_name
             FROM todos
-            WHERE id = $1;
+            LEFT OUTER JOIN todo_labels tl on todos.id = tl.todo_id
+            LEFT OUTER JOIN labels on labels.id = tl.label_id
+            WHERE todos.id=$1
             "#
-        ).bind(id)
-        .fetch_one(&self.pool)
+        ).
+        bind(id)
+        .fetch_all(&self.pool)
         .await
         .map_err(|e| match e {
             sqlx::Error::RowNotFound => RepositoryError::NotFound(id),
             _ => RepositoryError::Unexpected(e.to_string()),
         })?;
 
-        Ok(fold_entity(todo))
+        let todos = fold_entities(items);
+        let todo = todos.first().ok_or(RepositoryError::NotFound(id))?;
+        Ok(todo.clone())
     }
 
     async fn all(&self) -> anyhow::Result<Vec<TodoEntity>> {
         let todos = sqlx::query_as::<_, TodoWithLabelFromRow>(
             r#"
-            SELECT * FROM todos
-            ORDER BY id DESC;
+            SELECT todos.*, labels.id as label_id, labels.name as label_name
+            FROM todos
+                LEFT OUTER JOIN todo_labels tl on todos.id = tl.todo_id
+                LEFT OUTER JOIN labels on labels.id = tl.label_id
+            ORDER BY todos.id DESC
             "#
         ).fetch_all(&self.pool)
         .await?;
@@ -153,25 +199,72 @@ impl TodoRepository for TodoRepositoryForDb {
     }
 
     async fn update(&self, id: i32, payload: UpdateTodo) -> anyhow::Result<TodoEntity> {
-        // bind() で参照する payload のプロパティは Option<T> なので
-        // unwrap_or() を使うことで nil なら old_todo の値を渡すことで実質的に対象カラムを更新しないように書ける
+        let tx = self.pool.begin().await?;
+        
         let old_todo = self.find(id).await?;
-        let todo = sqlx::query_as::<_, TodoWithLabelFromRow>(
+        sqlx::query_as::<_, TodoWithLabelFromRow>(
             r#"
             UPDATE todos SET text=$1, completed=$2
             WHERE id=$3
             RETURNING *
             "#
-        ).bind(payload.text.unwrap_or(old_todo.text))
+        )
+        .bind(payload.text.unwrap_or(old_todo.text))
         .bind(payload.completed.unwrap_or(old_todo.completed))
         .bind(id)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(fold_entity(todo))
+        // payload が labels を持っているなら交差テーブル todo_labels を更新
+        if let Some(labels) = payload.labels {
+            // いったん削除
+            sqlx::query(
+                r#"
+                DELETE FROM todo_labels WHERE todo_id = $1
+                "#
+            )
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+            // 新しい label ids を insert
+            sqlx::query(
+                r#"
+                INSERT INTO todo_labels (todo_id, label_id)
+                SELECT $1, id
+                FROM unnest($2);
+                "#
+            )
+            .bind(id)
+            .bind(labels)
+            .execute(&self.pool)
+            .await?;
+        }
+
+        tx.commit().await?;
+        let todo = self.find(id).await?;
+
+        Ok(todo)
     }
 
     async fn delete(&self, id: i32) -> anyhow::Result<()> {
+        let tx = self.pool.begin().await?;
+
+        // 中間テーブルの関係を外す
+        sqlx::query(
+            r#"
+            DELETE FROM todo_labels WHERE todo_id = $1
+            "#
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => RepositoryError::NotFound(id),
+            _ => RepositoryError::Unexpected(e.to_string()),
+        })?;
+
+        // todo の削除
         sqlx::query(
             r#"
             DELETE FROM todos WHERE id = $1
@@ -184,6 +277,8 @@ impl TodoRepository for TodoRepositoryForDb {
             _ => RepositoryError::Unexpected(e.to_string())
         })?;
 
+        tx.commit().await?;
+        
         Ok(())
     }
 }
@@ -205,7 +300,7 @@ mod test {
             .expect(&format!("failed to connect database: [{}]", database_url));
         
         // label data prepare
-        let label_name = String::from("test label");
+        let label_name = String::from("test_label");
         let optional_label = sqlx::query_as::<_, Label>(
             r#"
             SELECT * FROM labels WHERE name = $1
@@ -228,7 +323,7 @@ mod test {
                 RETURNING *
                 "#
             )
-            .bind(label_name.clone())
+            .bind(label_name)
             .fetch_one(&pool)
             .await
             .expect("failed to insert label data.");
@@ -239,11 +334,15 @@ mod test {
         let repo = TodoRepositoryForDb::new(pool.clone());
         let todo_text = "[crud_scenario] text";
 
-        // cleanup todo data
-        // let todos = repo.all().await.expect("cannot get all todos");
-        // for item in todos.iter() {
-        //     repo.delete(item.id).await.expect(&format!("failed delete todo: {}", item.id));
-        // }
+        {
+            // cleanup todo data
+            let todos = repo.all().await.expect("cannot get all todos");
+            for item in todos.iter() {
+                repo.delete(item.id).await.expect(&format!("failed delete todo: {}", item.id));
+            }
+            let todos = repo.all().await.expect("cannot get all todos");
+            assert_eq!(todos.len(), 0);
+        }
 
         // create
         let created = repo
@@ -255,6 +354,7 @@ mod test {
             .expect("[create] returned Err");
         assert_eq!(created.text, todo_text);
         assert!(!created.completed);
+        assert_eq!(*created.labels.first().unwrap(), label_1);
 
         // find
         let todo = repo.find(created.id).await.expect("[find] returned Err");
@@ -262,21 +362,26 @@ mod test {
 
         // all
         let todos = repo.all().await.expect("[all] returned Err");
-        assert_eq!(todos, vec![todo]);
+        // assert_eq!(todos, vec![todo]);
+        let todo = todos.first().unwrap();
+        assert_eq!(created, *todo);
 
         // update
         let update_text = "[crud_scenario] updated text";
         let todo = repo
             .update(
-                created.id,
+                todo.id,
                 UpdateTodo {
                     text: Some(update_text.to_string()),
                     completed: Some(true),
-            })
+                    labels: Some(vec![]),
+                },
+            )
             .await
             .expect("[update] returned Err");
         assert_eq!(created.id, todo.id);
         assert_eq!(todo.text, update_text);
+        assert!(todo.labels.len() == 0);
 
         // delete
         let _ = repo.delete(todo.id).await.expect("[delete] returned Err");
@@ -292,6 +397,17 @@ mod test {
         .await
         .expect("[delete] todo_labels fetch error");
         assert!(todo_rows.len() == 0);
+
+        let rows = sqlx::query(
+            r#"
+            SELECT * FROM todo_labels WHERE todo_id = $1
+            "#
+        )
+        .bind(todo.id)
+        .fetch_all(&pool)
+        .await
+        .expect("[delete] todo_labels fect error");
+        assert!(rows.len() == 0);
     }
 }
 
@@ -473,7 +589,6 @@ pub mod test_utils {
             let expected = TodoEntity::new(id, text.clone());
 
             // create
-            // todo!("ラベルデータの追加");
             let labels = vec![];
             let repo = TodoRepositoryForMemory::new();
             let todo = repo
@@ -497,6 +612,7 @@ pub mod test_utils {
                 UpdateTodo {
                     text: Some(text.clone()),
                     completed: Some(true),
+                    labels: Some(vec![]),
                 }
             ).await.expect("failed update todo");
             assert_eq!(
