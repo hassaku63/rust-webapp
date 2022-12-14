@@ -168,7 +168,7 @@ impl TodoRepository for TodoRepositoryForDb {
             LEFT OUTER JOIN todo_labels tl on todos.id = tl.todo_id
             LEFT OUTER JOIN labels on labels.id = tl.label_id
             WHERE todos.id=$1
-            "#
+            "#  
         ).
         bind(id)
         .fetch_all(&self.pool)
@@ -202,7 +202,7 @@ impl TodoRepository for TodoRepositoryForDb {
         let tx = self.pool.begin().await?;
         
         let old_todo = self.find(id).await?;
-        sqlx::query_as::<_, TodoWithLabelFromRow>(
+        sqlx::query_as::<_, TodoFromRow>(
             r#"
             UPDATE todos SET text=$1, completed=$2
             WHERE id=$3
@@ -231,8 +231,8 @@ impl TodoRepository for TodoRepositoryForDb {
             sqlx::query(
                 r#"
                 INSERT INTO todo_labels (todo_id, label_id)
-                SELECT $1, id
-                FROM unnest($2);
+                SELECT $1, id as label_id
+                FROM unnest($2) as t(id);
                 "#
             )
             .bind(id)
@@ -300,7 +300,10 @@ mod test {
             .expect(&format!("failed to connect database: [{}]", database_url));
         
         // label data prepare
-        let label_name = String::from("test_label");
+        // Note: Label レポジトリのテストデータと同じ名前だと2回目以降のテストが通らない.
+        //        このことから、複数スレッド or 複数クライアントを想定したシナリオが漏れている
+        //        脆弱なテストと言えるのではないか?
+        let label_name = String::from("test label");
         let optional_label = sqlx::query_as::<_, Label>(
             r#"
             SELECT * FROM labels WHERE name = $1
@@ -333,16 +336,6 @@ mod test {
 
         let repo = TodoRepositoryForDb::new(pool.clone());
         let todo_text = "[crud_scenario] text";
-
-        {
-            // cleanup todo data
-            let todos = repo.all().await.expect("cannot get all todos");
-            for item in todos.iter() {
-                repo.delete(item.id).await.expect(&format!("failed delete todo: {}", item.id));
-            }
-            let todos = repo.all().await.expect("cannot get all todos");
-            assert_eq!(todos.len(), 0);
-        }
 
         // create
         let created = repo
@@ -384,7 +377,10 @@ mod test {
         assert!(todo.labels.len() == 0);
 
         // delete
-        let _ = repo.delete(todo.id).await.expect("[delete] returned Err");
+        let _ = repo
+            .delete(todo.id)
+            .await
+            .expect("[delete] returned Err");
         let res = repo.find(created.id).await;
         assert!(res.is_err());
 
@@ -392,7 +388,8 @@ mod test {
             r#"
             SELECT * FROM todos where id = $1
             "#
-        ).bind(todo.id)
+        )
+        .bind(todo.id)
         .fetch_all(&pool)
         .await
         .expect("[delete] todo_labels fetch error");
