@@ -1,32 +1,44 @@
 
 import { ChangeEventHandler, useState, useEffect, FC } from "react"
-import type { Todo } from '../types/todo'
+import type { Todo, Label, UpdateTodoPayload } from '../types/todo'
 import {
-    Button, Card, Checkbox,
-    Grid, Modal, Stack,
-    Typography, TextField,
+    Box,
+    Button,
+    Chip,
+    Card,
+    Checkbox,
+    FormControlLabel,
+    Grid,
+    Modal,
+    Stack,
+    Typography,
+    TextField,
 } from "@mui/material"
-import { modalInnerStyle } from "../styles/modal";
-import { Box } from "@mui/system";
+import { modalInnerStyle } from "../styles/modal"
+import { toggleLabels } from "../lib/toggleLabels";
 
 type Props = {
     todo: Todo
-    onUpdate: (todo: Todo) => void
+    onUpdate: (todo: UpdateTodoPayload) => void
     onDelete: (id: number) => void
+    labels: Label[]
 }
 
-const TodoItem: FC<Props> = ({ todo, onUpdate, onDelete }) => {
+const TodoItem: FC<Props> = ({ todo, onUpdate, onDelete, labels }) => {
     const [editing, setEditing] = useState(false)
     const [editText, setEditText] = useState('')
+    const [editLabels, setEditLabels] = useState<Label[]>([])
 
     useEffect(() => {
         setEditText(todo.text)
-    }, [todo])
+        setEditLabels(todo.labels)
+    }, [todo, editing])
 
     const handleCompletedCheckbox: ChangeEventHandler = (e) => {
         onUpdate({
             ...todo,
-            completed: !todo.completed
+            completed: !todo.completed,
+            labels: todo.labels.map((label) => label.id),
         })
     }
 
@@ -34,6 +46,8 @@ const TodoItem: FC<Props> = ({ todo, onUpdate, onDelete }) => {
         onUpdate({
             ...todo,
             text: editText,
+            completed: todo.completed,
+            labels: editLabels.map((label) => label.id),
         })
         setEditing(false)
     }
@@ -41,7 +55,8 @@ const TodoItem: FC<Props> = ({ todo, onUpdate, onDelete }) => {
     const handleDelete = () => onDelete(todo.id)
 
     return (
-        <Card key={todo.id} sx={{ p: 1 }}>
+        // <Card key={todo.id} sx={{ p: 1 }}>
+        <Card sx={{ p: 1 }}>
             <Grid container spacing={2} alignItems="center">
                 <Grid item xs={1}>
                     <Checkbox
@@ -51,15 +66,22 @@ const TodoItem: FC<Props> = ({ todo, onUpdate, onDelete }) => {
                 </Grid>
             </Grid>
 
-            <Grid item xs={9}>
+            <Grid item xs={8}>
                 <Stack spacing={1}>
                     <Typography variant="caption" fontSize={16}>
                         {todo.text}
                     </Typography>
                 </Stack>
+                <Stack direction="row" spacing={1}>
+                    {
+                        todo.labels?.map((label) => (
+                            <Chip key={label.id} label={label.name} size="small" />
+                        ))
+                    }
+                </Stack>
             </Grid>
 
-            <Grid item xs={1}>
+            <Grid item xs={2}>
                 <Stack direction="row" spacing={1}>
                     <Button onClick={() => setEditing(true)} color="info">
                         edit
@@ -79,6 +101,24 @@ const TodoItem: FC<Props> = ({ todo, onUpdate, onDelete }) => {
                             defaultValue={todo.text}
                             onChange={(e) => setEditText(e.target.value)}
                         ></TextField>
+
+                        <Stack>
+                            <Typography variant="subtitle1">Labels</Typography>
+                            {
+                                labels.map((label) => (
+                                    <FormControlLabel
+                                        key={label.id}
+                                        control={
+                                            <Checkbox
+                                                defaultChecked={todo.labels.some((todoLabel) => todoLabel.id === label.id) }
+                                            />
+                                        }
+                                        label={label.name}
+                                        onChange={() => setEditLabels((prev) => toggleLabels(prev, label))}
+                                    />
+                                ))
+                            }
+                        </Stack>
                     </Stack>
                 </Box>
             </Modal>
